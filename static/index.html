@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 股市模拟交易系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="/static/style.css?v=4">
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <!-- 顶部导航 -->
+    <nav class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <span class="text-2xl">🤖</span>
+            <h1 class="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+                AI 股市模拟交易系统
+            </h1>
+        </div>
+        <div class="flex items-center gap-4">
+            <span id="market-status" class="text-xs px-2 py-1 rounded bg-gray-700 text-gray-400">--</span>
+            <span id="clock" class="text-gray-400 text-sm"></span>
+            <span id="ws-status" class="text-xs px-2 py-1 rounded bg-red-900 text-red-300">断开</span>
+            <button onclick="runStrategy()" class="bg-blue-600 hover:bg-blue-700 px-4 py-1.5 rounded text-sm font-medium transition">
+                ▶ 运行策略
+            </button>
+        </div>
+    </nav>
+
+    <div class="flex h-[calc(100vh-56px)]">
+        <!-- 左侧: 仪表盘 -->
+        <div class="flex-1 overflow-y-auto p-4 space-y-4">
+            <!-- 资产概览卡片 -->
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <div class="text-gray-400 text-xs mb-1">总资产</div>
+                    <div id="total-value" class="text-2xl font-bold">$50,000.00</div>
+                </div>
+                <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <div class="text-gray-400 text-xs mb-1">可用现金</div>
+                    <div id="cash" class="text-2xl font-bold">$50,000.00</div>
+                </div>
+                <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <div class="text-gray-400 text-xs mb-1">总盈亏</div>
+                    <div id="total-pnl" class="text-2xl font-bold">$0.00</div>
+                    <div id="total-pnl-pct" class="text-xs text-gray-400">0.00%</div>
+                </div>
+                <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <div class="text-gray-400 text-xs mb-1">最大回撤</div>
+                    <div id="max-drawdown" class="text-2xl font-bold text-yellow-400">0.00%</div>
+                </div>
+                <div id="vix-card" class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <div class="text-gray-400 text-xs mb-1">📉 VIX 恐慌指数</div>
+                    <div id="vix-value" class="text-2xl font-bold text-gray-400">--</div>
+                    <div id="vix-status" class="text-xs text-gray-500">加载中...</div>
+                </div>
+            </div>
+
+            <!-- 警报通知栏 -->
+            <div id="alert-banner" class="hidden rounded-lg p-3 border text-sm font-medium flex items-center justify-between">
+                <span id="alert-text"></span>
+                <button onclick="dismissAlert()" class="ml-4 text-xs opacity-70 hover:opacity-100">✕</button>
+            </div>
+
+            <!-- 持仓列表 -->
+            <div class="bg-gray-800 rounded-lg border border-gray-700">
+                <div class="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
+                    <h2 class="font-semibold">📊 当前持仓</h2>
+                    <span id="position-count" class="text-xs text-gray-400">0/5</span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead class="text-gray-400 text-xs">
+                            <tr>
+                                <th class="px-4 py-2 text-left">股票</th>
+                                <th class="px-4 py-2 text-right">股数</th>
+                                <th class="px-4 py-2 text-right">成本</th>
+                                <th class="px-4 py-2 text-right">现价</th>
+                                <th class="px-4 py-2 text-right">市值</th>
+                                <th class="px-4 py-2 text-right">盈亏</th>
+                                <th class="px-4 py-2 text-right">盈亏%</th>
+                            </tr>
+                        </thead>
+                        <tbody id="positions-table">
+                            <tr><td colspan="7" class="px-4 py-8 text-center text-gray-500">空仓 - 等待 AI 分析...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 行情看板 -->
+            <div class="bg-gray-800 rounded-lg border border-gray-700">
+                <div class="px-4 py-3 border-b border-gray-700">
+                    <h2 class="font-semibold">📈 AI 龙头股行情</h2>
+                </div>
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 p-3" id="quotes-grid">
+                    <div class="text-center text-gray-500 col-span-full py-4">加载中...</div>
+                </div>
+            </div>
+
+            <!-- 资产曲线图 -->
+            <div class="bg-gray-800 rounded-lg border border-gray-700 p-4">
+                <h2 class="font-semibold mb-3">💹 资产曲线</h2>
+                <div style="height: 200px;">
+                    <canvas id="equity-chart"></canvas>
+                </div>
+            </div>
+
+            <!-- QQQ/TQQQ 轮动账户对比 -->
+            <div class="bg-gray-800 rounded-lg border border-gray-700">
+                <div class="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
+                    <h2 class="font-semibold">📈 QQQ/TQQQ 轮动账户 (Benchmark)</h2>
+                    <div class="flex items-center gap-2">
+                        <span id="qqq-holding" class="text-xs px-2 py-1 rounded bg-gray-700 text-gray-400">--</span>
+                        <span id="qqq-status-text" class="text-xs text-gray-500"></span>
+                    </div>
+                </div>
+                <div class="p-4">
+                    <!-- QQQ 账户概览 -->
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                        <div class="bg-gray-900 rounded p-3">
+                            <div class="text-gray-500 text-xs mb-1">总资产</div>
+                            <div id="qqq-total-value" class="text-lg font-bold">--</div>
+                        </div>
+                        <div class="bg-gray-900 rounded p-3">
+                            <div class="text-gray-500 text-xs mb-1">总盈亏</div>
+                            <div id="qqq-total-pnl" class="text-lg font-bold">--</div>
+                            <div id="qqq-total-pnl-pct" class="text-xs text-gray-500">--</div>
+                        </div>
+                        <div class="bg-gray-900 rounded p-3">
+                            <div class="text-gray-500 text-xs mb-1">最大回撤</div>
+                            <div id="qqq-max-drawdown" class="text-lg font-bold text-yellow-400">--</div>
+                        </div>
+                        <div class="bg-gray-900 rounded p-3">
+                            <div class="text-gray-500 text-xs mb-1">SMA200</div>
+                            <div id="qqq-sma200" class="text-lg font-bold">--</div>
+                            <div id="qqq-sma-status" class="text-xs text-gray-500">--</div>
+                        </div>
+                    </div>
+                    <!-- 持仓明细 -->
+                    <div id="qqq-position-detail" class="bg-gray-900 rounded p-3 mb-4 hidden">
+                        <div class="text-gray-500 text-xs mb-2">📋 当前持仓</div>
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <span id="qqq-pos-symbol" class="font-bold text-sm">--</span>
+                                <span id="qqq-pos-shares" class="text-gray-400 text-sm ml-2">-- 股</span>
+                                <span class="text-gray-600 text-xs ml-2">均价</span>
+                                <span id="qqq-pos-cost" class="text-gray-400 text-xs">$--</span>
+                            </div>
+                            <div class="text-right">
+                                <span class="text-gray-600 text-xs">现价</span>
+                                <span id="qqq-pos-price" class="text-sm ml-1">$--</span>
+                                <span id="qqq-pos-pnl" class="text-sm ml-2">--</span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- 收益对比 -->
+                    <div class="bg-gray-900 rounded p-3">
+                        <div class="text-gray-500 text-xs mb-2">📊 收益对比</div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <div class="text-xs text-gray-500">🤖 AI 龙头 (账户1)</div>
+                                <div id="cmp-acct1" class="text-lg font-bold">--</div>
+                            </div>
+                            <div>
+                                <div class="text-xs text-gray-500">📈 QQQ轮动 (账户2)</div>
+                                <div id="cmp-acct2" class="text-lg font-bold">--</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 交易历史 -->
+            <div class="bg-gray-800 rounded-lg border border-gray-700">
+                <div class="px-4 py-3 border-b border-gray-700">
+                    <h2 class="font-semibold">📋 交易记录</h2>
+                </div>
+                <div class="overflow-x-auto max-h-64 overflow-y-auto">
+                    <table class="w-full text-sm">
+                        <thead class="text-gray-400 text-xs sticky top-0 bg-gray-800">
+                            <tr>
+                                <th class="px-4 py-2 text-left">时间</th>
+                                <th class="px-4 py-2 text-left">操作</th>
+                                <th class="px-4 py-2 text-left">股票</th>
+                                <th class="px-4 py-2 text-right">股数</th>
+                                <th class="px-4 py-2 text-right">价格</th>
+                                <th class="px-4 py-2 text-right">金额</th>
+                                <th class="px-4 py-2 text-left">原因</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trades-table">
+                            <tr><td colspan="7" class="px-4 py-8 text-center text-gray-500">暂无交易记录</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右侧: AI 聊天 -->
+        <div class="w-96 bg-gray-850 border-l border-gray-700 flex flex-col" style="background: #1a1d23;">
+            <div class="px-4 py-3 border-b border-gray-700">
+                <h2 class="font-semibold">💬 AI 助手</h2>
+                <p class="text-xs text-gray-500">询问持仓、分析、交易建议</p>
+            </div>
+            <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-3">
+                <div class="bg-blue-900/30 rounded-lg p-3 text-sm">
+                    <div class="text-blue-400 text-xs mb-1">🤖 AI 助手</div>
+                    你好！我是你的 AI 交易助手。你可以问我：
+                    <ul class="mt-1 text-xs text-gray-400 list-disc list-inside">
+                        <li>当前持仓怎么样？</li>
+                        <li>为什么买了 NVDA？</li>
+                        <li>AI 板块今天走势如何？</li>
+                        <li>帮我分析一下 MSFT</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="p-3 border-t border-gray-700">
+                <div class="flex gap-2">
+                    <input id="chat-input" type="text" placeholder="输入消息..."
+                        class="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+                        onkeydown="if(event.key==='Enter')sendChat()">
+                    <button onclick="sendChat()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm transition">
+                        发送
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js?v=4"></script>
+</body>
+</html>
