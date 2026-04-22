@@ -110,6 +110,17 @@ async def init_db():
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS trend_pyramid_states (
+                symbol TEXT PRIMARY KEY,
+                level INTEGER NOT NULL DEFAULT 0,
+                entry_price REAL NOT NULL,
+                planned_amount REAL NOT NULL,
+                invested_amount REAL NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS stop_loss_cooldowns (
                 symbol TEXT PRIMARY KEY,
                 stop_loss_price REAL NOT NULL,

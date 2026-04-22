@@ -21,7 +21,7 @@ from data.stocks import get_symbols, AI_STOCKS
 from models import TradeAction
 from strategy.engine import generate_signals
 from utils import get_market_status
-from trading.executor import execute_signal, check_stop_loss_take_profit, check_rebuy_opportunities, check_pyramid_additions
+from trading.executor import execute_signal, check_stop_loss_take_profit, check_rebuy_opportunities, check_pyramid_additions, check_trend_pyramid_additions, check_rotation_swap
 from trading.portfolio import get_portfolio_snapshot, save_snapshot, get_positions, get_cash
 from trading.qqq_rotation import check_rotation, get_qqq_portfolio, save_qqq_snapshot, init_qqq_account, get_qqq_sma200
 from notify import notify_trade, notify_alert, notify_rotation
@@ -126,6 +126,19 @@ async def scheduled_strategy():
                 "timestamp": datetime.now().isoformat(),
             }})
 
+        # 检查顺势金字塔加仓 (盈利触发, 加仓量递减)
+        trend_pyramid_trades = await check_trend_pyramid_additions()
+        for t in trend_pyramid_trades:
+            await broadcast({"type": "trade", "data": t.model_dump()})
+            await notify_trade(t.model_dump())
+            await broadcast({"type": "alert", "data": {
+                "alert_type": "trend_pyramid_add",
+                "symbol": t.symbol,
+                "value": t.price,
+                "message": f"📈 {t.reason}",
+                "timestamp": datetime.now().isoformat(),
+            }})
+
         # 检查止损/分阶段止盈
         sl_trades = await check_stop_loss_take_profit()
         for t in sl_trades:
@@ -161,6 +174,20 @@ async def scheduled_strategy():
 
         # 生成信号
         signals = await generate_signals()
+
+        # AI 轮动: 持仓满时用强信号未持仓股替换最弱在持股
+        rotation_trades = await check_rotation_swap(signals)
+        for t in rotation_trades:
+            await broadcast({"type": "trade", "data": t.model_dump()})
+            await notify_trade(t.model_dump())
+            await broadcast({"type": "alert", "data": {
+                "alert_type": "ai_rotation",
+                "symbol": t.symbol,
+                "value": t.price,
+                "message": f"🔁 {t.reason}",
+                "timestamp": datetime.now().isoformat(),
+            }})
+
         for signal in signals:
             if signal.action.value != "HOLD":
                 trade = await execute_signal(signal)
@@ -231,6 +258,10 @@ async def lifespan(app: FastAPI):
     logger.info(f"💰 初始资金: ${Config.INITIAL_CAPITAL:,.2f}")
     logger.info(f"📊 股票池: {', '.join(get_symbols())}")
     logger.info(f"📐 策略: 金字塔买入 {[f'{w*100:.0f}%' for w in Config.PYRAMID_WEIGHTS]} | 跌{[f'{d*100:.0f}%' for d in Config.PYRAMID_DROP_TRIGGERS]}触发")
+    if Config.TREND_PYRAMID_ENABLED:
+        logger.info(f"📈 顺势金字塔: {[f'{w*100:.0f}%' for w in Config.TREND_PYRAMID_WEIGHTS]} | 涨{[f'+{r*100:.0f}%' for r in Config.TREND_PYRAMID_RISE_TRIGGERS]}触发 | 单股预算{Config.TREND_PYRAMID_BUDGET_PCT*100:.0f}%")
+    if Config.ROTATION_ENABLED:
+        logger.info(f"🔁 AI轮动: 候选评分≥{Config.ROTATION_MIN_CANDIDATE_SCORE} 置信≥{Config.ROTATION_MIN_CANDIDATE_CONFIDENCE} 差距≥{Config.ROTATION_SCORE_GAP} | 浮盈≥{Config.ROTATION_PROTECT_WINNERS_PCT*100:.0f}%保护 | 新仓{Config.ROTATION_HOLD_COOLDOWN_DAYS}天冷却 | 每日≤{Config.ROTATION_MAX_PER_DAY}次")
     logger.info(f"💰 止盈: +{Config.TAKE_PROFIT_PCT*100:.0f}%卖半 → +{Config.TAKE_PROFIT_ALL_PCT*100:.0f}%清仓")
     logger.info(f"🛑 止损: 入场价跌{Config.STOP_LOSS_PCT*100:.0f}% → 清仓+冷却{Config.STOP_LOSS_COOLDOWN_DAYS}天")
     logger.info(f"🤖 策略模型: {Config.LLM_MODEL} (盘中) | 聊天模型: {Config.LLM_CHAT_MODEL}")

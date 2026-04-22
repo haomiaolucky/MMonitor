@@ -172,6 +172,113 @@ async def check_pyramid_additions() -> list[Trade]:
     return trades
 
 
+# ==================== 顺势金字塔加仓 (Trend Pyramid / Add on Rally) ====================
+
+async def check_trend_pyramid_additions() -> list[Trade]:
+    """
+    顺势金字塔加仓: 盈利触发，加仓量递减 (50%/30%/20%)
+    - 入场价 = 首次买入价 (沿用 pyramid_states.entry_price)
+    - 涨 +5%/+10%/+15% 分别触发 L1/L2/L3
+    - 每股加仓预算 = 组合总值 * TREND_PYRAMID_BUDGET_PCT
+    - 受 MAX_POSITION_PCT 约束 (防止单股仓位超限)
+    """
+    if not Config.TREND_PYRAMID_ENABLED:
+        return []
+
+    trades = []
+    positions = await get_positions()
+    if not positions:
+        return []
+
+    snapshot = await get_portfolio_snapshot()
+    max_levels = len(Config.TREND_PYRAMID_RISE_TRIGGERS)
+
+    for pos in positions:
+        # 必须有金字塔入场记录 (避免对历史遗留持仓乱加)
+        pyramid = await _get_pyramid_state(pos.symbol)
+        if not pyramid:
+            continue
+        entry_price = pyramid["entry_price"]
+
+        trend = await _get_trend_pyramid_state(pos.symbol)
+        current_level = trend["level"] if trend else 0
+        if current_level >= max_levels:
+            continue
+
+        next_level = current_level + 1  # 1-indexed
+        trigger_pct = Config.TREND_PYRAMID_RISE_TRIGGERS[next_level - 1]
+        trigger_price = entry_price * (1 + trigger_pct)
+
+        if pos.current_price < trigger_price:
+            continue
+
+        # 单股总加仓预算 (创建时锁定，后续涨涨跌跌不变)
+        if trend:
+            planned_amount = trend["planned_amount"]
+        else:
+            planned_amount = snapshot.total_value * Config.TREND_PYRAMID_BUDGET_PCT
+
+        weight = Config.TREND_PYRAMID_WEIGHTS[next_level - 1]
+        buy_amount = planned_amount * weight
+
+        # 受单股最大仓位约束: 不能让该股市值超过 MAX_POSITION_PCT
+        max_position_value = snapshot.total_value * Config.MAX_POSITION_PCT
+        room = max_position_value - pos.market_value
+        if room <= Config.MIN_TRADE_AMOUNT:
+            logger.info(f"{pos.symbol} 顺势金字塔L{next_level} 已达单股仓位上限 ({Config.MAX_POSITION_PCT*100:.0f}%)，跳过")
+            continue
+        buy_amount = min(buy_amount, room)
+
+        # 受现金约束
+        cash = await get_cash()
+        buy_amount = min(buy_amount, cash - Config.MIN_TRADE_AMOUNT)
+        if buy_amount < Config.MIN_TRADE_AMOUNT:
+            logger.info(f"{pos.symbol} 顺势金字塔L{next_level} 现金不足，跳过")
+            continue
+
+        if not await check_daily_trade_limit():
+            continue
+
+        slippage = pos.current_price * Config.SLIPPAGE_PCT
+        fill_price = pos.current_price + slippage
+        commission = Config.COMMISSION_PER_TRADE
+        shares = (buy_amount - commission) / fill_price
+        if shares <= 0:
+            continue
+        actual_amount = shares * fill_price + commission
+        rise_pct = (pos.current_price - entry_price) / entry_price * 100
+
+        trade = Trade(
+            symbol=pos.symbol,
+            action=TradeAction.BUY,
+            shares=round(shares, 4),
+            price=round(fill_price, 2),
+            amount=round(actual_amount, 2),
+            commission=commission,
+            slippage=round(slippage * shares, 2),
+            reason=f"[顺势金字塔L{next_level}/{int(weight*100)}%] 价格涨至${pos.current_price:.2f} (入场价${entry_price:.2f}涨{rise_pct:+.1f}%)，盈利加仓",
+            technical_score=0,
+            llm_score=0,
+            timestamp=datetime.now(),
+        )
+
+        await _save_trade(trade)
+        await update_cash(cash - actual_amount)
+        await _update_position_buy(pos.symbol, shares, fill_price)
+        await increment_daily_trades()
+        if trend:
+            await _update_trend_pyramid_level(pos.symbol, next_level, actual_amount)
+        else:
+            await _create_trend_pyramid_state(pos.symbol, entry_price, planned_amount, actual_amount, level=next_level)
+        await _log_audit("TREND_PYRAMID_ADD", pos.symbol,
+                         f"顺势金字塔L{next_level} 加仓 {shares:.2f}股 @ ${fill_price:.2f}")
+
+        logger.info(f"📈 顺势金字塔L{next_level} 加仓 {pos.symbol}: {shares:.2f}股 @ ${fill_price:.2f}")
+        trades.append(trade)
+
+    return trades
+
+
 # ==================== 分阶段止盈 / 止损 ====================
 
 async def _execute_sell(signal: TradeSignal, sell_shares: float = 0) -> Trade | None:
@@ -214,6 +321,7 @@ async def _execute_sell(signal: TradeSignal, sell_shares: float = 0) -> Trade | 
     else:
         await _remove_position(signal.symbol)
         await _complete_pyramid_state(signal.symbol)
+        await _complete_trend_pyramid_state(signal.symbol)
 
     await increment_daily_trades()
 
@@ -408,6 +516,164 @@ async def check_rebuy_opportunities() -> list[dict]:
     return opportunities
 
 
+# ==================== AI 卖弱换强轮动 (Rotation Swap) ====================
+
+async def check_rotation_swap(signals: list[TradeSignal]) -> list[Trade]:
+    """
+    AI 自动轮动: 持仓满时，用强信号未持仓股替换最弱在持股
+    返回交易列表 (一次轮动包含 SELL + BUY 两笔)
+    """
+    if not Config.ROTATION_ENABLED or not signals:
+        return []
+
+    positions = await get_positions()
+    if len(positions) < Config.MAX_HOLDINGS:
+        return []
+
+    if not await check_daily_trade_limit():
+        return []
+
+    # 每日轮换次数限制
+    today_swaps = await _count_today_rotations()
+    if today_swaps >= Config.ROTATION_MAX_PER_DAY:
+        logger.info(f"今日轮动已达上限 ({Config.ROTATION_MAX_PER_DAY})，跳过")
+        return []
+
+    held_symbols = {p.symbol for p in positions}
+    sig_map = {s.symbol: s for s in signals}
+
+    # 找最弱在持: 综合评分最低 + 浮盈未达保护阈值 + 不在新换入冷却期内
+    weakest = None
+    weakest_score = None
+    for pos in positions:
+        sig = sig_map.get(pos.symbol)
+        if sig is None:
+            continue
+        if pos.unrealized_pnl_pct >= Config.ROTATION_PROTECT_WINNERS_PCT * 100:
+            continue
+        if await _in_rotation_cooldown(pos.symbol):
+            continue
+        if weakest is None or sig.combined_score < weakest_score:
+            weakest = pos
+            weakest_score = sig.combined_score
+
+    if weakest is None:
+        logger.info("无可换出在持股 (全部赢家保护中或新换入冷却中)")
+        return []
+
+    # 找最强候选: 未持仓 + STRONG_BUY 类高分 + 高置信度 + 不在止损冷却
+    candidate = None
+    candidate_score = -2.0
+    for sig in signals:
+        if sig.symbol in held_symbols:
+            continue
+        if sig.combined_score < Config.ROTATION_MIN_CANDIDATE_SCORE:
+            continue
+        if sig.confidence < Config.ROTATION_MIN_CANDIDATE_CONFIDENCE:
+            continue
+        if sig.action != TradeAction.BUY:
+            continue
+        if await _has_cooldown(sig.symbol):
+            continue
+        if sig.combined_score > candidate_score:
+            candidate = sig
+            candidate_score = sig.combined_score
+
+    if candidate is None:
+        return []
+
+    score_gap = candidate_score - weakest_score
+    if score_gap < Config.ROTATION_SCORE_GAP:
+        logger.info(
+            f"轮动信号不足: 候选 {candidate.symbol}({candidate_score:.2f}) - "
+            f"最弱 {weakest.symbol}({weakest_score:.2f}) = {score_gap:.2f} < {Config.ROTATION_SCORE_GAP}"
+        )
+        return []
+
+    logger.info(
+        f"🔁 触发AI轮动: 卖出 {weakest.symbol}({weakest_score:.2f}, 浮盈{weakest.unrealized_pnl_pct:.1f}%) "
+        f"→ 买入 {candidate.symbol}({candidate_score:.2f}, 置信{candidate.confidence:.2f})"
+    )
+
+    trades: list[Trade] = []
+
+    # 1) 清仓最弱
+    sell_signal = TradeSignal(
+        symbol=weakest.symbol,
+        action=TradeAction.SELL,
+        confidence=candidate.confidence,
+        technical_score=sig_map[weakest.symbol].technical_score,
+        llm_score=sig_map[weakest.symbol].llm_score,
+        combined_score=weakest_score,
+        reason=f"🔁 AI轮动卖出: 综合评分{weakest_score:.2f} 弱于候选 {candidate.symbol}({candidate_score:.2f}, 差{score_gap:.2f})",
+        suggested_amount=0,
+        timestamp=datetime.now(),
+    )
+    sell_trade = await _execute_sell(sell_signal)
+    if sell_trade is None:
+        logger.warning(f"轮动卖出 {weakest.symbol} 失败，放弃换仓")
+        return []
+    trades.append(sell_trade)
+
+    # 2) 立即建仓候选 (走标准 _execute_buy → 创建新金字塔 L1)
+    buy_signal = TradeSignal(
+        symbol=candidate.symbol,
+        action=TradeAction.BUY,
+        confidence=candidate.confidence,
+        technical_score=candidate.technical_score,
+        llm_score=candidate.llm_score,
+        combined_score=candidate.combined_score,
+        reason=f"🔁 AI轮动买入: 替换 {weakest.symbol} (评分差+{score_gap:.2f}) | {candidate.reason}",
+        suggested_amount=candidate.suggested_amount,
+        timestamp=datetime.now(),
+    )
+    buy_trade = await execute_signal(buy_signal)
+    if buy_trade:
+        trades.append(buy_trade)
+        await _log_audit(
+            "ROTATION_SWAP", candidate.symbol,
+            f"OUT={weakest.symbol}({weakest_score:.2f}, P&L {weakest.unrealized_pnl_pct:+.1f}%) "
+            f"IN={candidate.symbol}({candidate_score:.2f}, conf {candidate.confidence:.2f}) gap=+{score_gap:.2f}"
+        )
+        logger.info(f"✅ AI轮动完成: {weakest.symbol} → {candidate.symbol}")
+    else:
+        logger.warning(f"轮动买入 {candidate.symbol} 失败 (卖出已完成，下次循环会自动尝试新建仓)")
+
+    return trades
+
+
+async def _count_today_rotations() -> int:
+    """统计今日已发生的轮动次数 (基于 audit_log)"""
+    db = await get_db()
+    try:
+        today_prefix = datetime.now().strftime("%Y-%m-%d")
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE event_type = 'ROTATION_SWAP' AND timestamp LIKE ?",
+            (f"{today_prefix}%",)
+        )
+        return (await cursor.fetchone())[0]
+    finally:
+        await db.close()
+
+
+async def _in_rotation_cooldown(symbol: str) -> bool:
+    """新换入持仓 N 天内不被换出 (基于 audit_log 中该股最近一次 ROTATION_SWAP IN 记录)"""
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT timestamp FROM audit_log WHERE event_type = 'ROTATION_SWAP' AND symbol = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (symbol,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return False
+        last_swap = datetime.fromisoformat(row[0])
+        return (datetime.now() - last_swap).days < Config.ROTATION_HOLD_COOLDOWN_DAYS
+    finally:
+        await db.close()
+
+
 # ==================== 辅助函数 ====================
 
 def _get_current_price(symbol: str) -> float:
@@ -549,6 +815,70 @@ async def _complete_pyramid_state(symbol: str):
         now = datetime.now().isoformat()
         await db.execute(
             "UPDATE pyramid_states SET status = 'completed', updated_at = ? WHERE symbol = ?",
+            (now, symbol)
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+# --- 顺势金字塔状态管理 ---
+
+async def _get_trend_pyramid_state(symbol: str) -> dict | None:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT symbol, level, entry_price, planned_amount, invested_amount, status "
+            "FROM trend_pyramid_states WHERE symbol = ? AND status = 'active'",
+            (symbol,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            return {"symbol": row[0], "level": row[1], "entry_price": row[2],
+                    "planned_amount": row[3], "invested_amount": row[4], "status": row[5]}
+        return None
+    finally:
+        await db.close()
+
+
+async def _create_trend_pyramid_state(symbol: str, entry_price: float, planned_amount: float,
+                                       invested: float, level: int = 1):
+    db = await get_db()
+    try:
+        now = datetime.now().isoformat()
+        await db.execute(
+            """INSERT OR REPLACE INTO trend_pyramid_states
+               (symbol, level, entry_price, planned_amount, invested_amount, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'active', ?, ?)""",
+            (symbol, level, entry_price, planned_amount, invested, now, now)
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def _update_trend_pyramid_level(symbol: str, new_level: int, additional_invested: float):
+    db = await get_db()
+    try:
+        now = datetime.now().isoformat()
+        await db.execute(
+            "UPDATE trend_pyramid_states SET level = ?, invested_amount = invested_amount + ?, "
+            "updated_at = ? WHERE symbol = ?",
+            (new_level, additional_invested, now, symbol)
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def _complete_trend_pyramid_state(symbol: str):
+    """清仓时标记顺势金字塔完成 (并允许下次新金字塔重新开始)"""
+    db = await get_db()
+    try:
+        now = datetime.now().isoformat()
+        await db.execute(
+            "UPDATE trend_pyramid_states SET status = 'completed', updated_at = ? "
+            "WHERE symbol = ? AND status = 'active'",
             (now, symbol)
         )
         await db.commit()

@@ -28,3 +28,7 @@ Thumbs.db
 # Data files
 *.db
 *.sqlite3
+
+# Runtime logs
+_mm.log
+_mm.err.log

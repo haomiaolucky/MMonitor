@@ -30,9 +30,26 @@ class Config:
     MAX_PORTFOLIO_DRAWDOWN = -0.15   # 组合最大回撤 -15%
     DAILY_LOSS_LIMIT = -0.03         # 日亏损上限 -3%
 
-    # 金字塔买入
+    # 金字塔买入 (跌破加仓 / Averaging Down)
     PYRAMID_WEIGHTS = [0.30, 0.30, 0.40]       # 各层仓位比例
     PYRAMID_DROP_TRIGGERS = [0.0, -0.05, -0.10] # 各层触发跌幅 (从首次买入价)
+
+    # 顺势金字塔加仓 (Trend Pyramid / Add on Rally)
+    # 盈利时加仓，越往上加得越少 — 标准金字塔结构 (底重顶轻)
+    TREND_PYRAMID_ENABLED = True
+    TREND_PYRAMID_RISE_TRIGGERS = [0.05, 0.10, 0.15]  # 各层触发涨幅 (相对入场价)
+    TREND_PYRAMID_WEIGHTS = [0.50, 0.30, 0.20]        # 各层加仓比例 (相对单股加仓预算)
+    TREND_PYRAMID_BUDGET_PCT = 0.10                   # 单股加仓预算占组合总值的比例
+
+    # AI 卖弱换强轮动 (Rotation Swap)
+    # 持仓满时，AI 自动用强信号未持仓股替换最弱在持股
+    ROTATION_ENABLED = True
+    ROTATION_SCORE_GAP = 0.4                # 候选 - 在持最弱: 综合分差距阈值
+    ROTATION_MIN_CANDIDATE_SCORE = 0.5      # 候选股最低综合评分
+    ROTATION_MIN_CANDIDATE_CONFIDENCE = 0.7 # 候选股最低置信度 (LLM)
+    ROTATION_PROTECT_WINNERS_PCT = 0.10     # 浮盈 ≥10% 的在持股被保护，不被换出
+    ROTATION_HOLD_COOLDOWN_DAYS = 3         # 新换入持仓 N 天内不被换出
+    ROTATION_MAX_PER_DAY = 1                # 每日最多换仓次数
 
     # 止损冷却与再入场
     STOP_LOSS_COOLDOWN_DAYS = 7      # 止损后冷却天数
