@@ -252,6 +252,8 @@ async def scheduled_qqq_rotation():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from db_backup import restore_db, backup_db
+    await restore_db()
     await init_db()
     logger.info("=" * 50)
     logger.info("🚀 AI 股市模拟交易系统启动")
@@ -275,10 +277,21 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(scheduled_strategy, 'interval', seconds=Config.STRATEGY_INTERVAL_SECONDS, id='strategy', misfire_grace_time=60)
     scheduler.add_job(scheduled_vix_check, 'interval', seconds=Config.VIX_CHECK_INTERVAL_SECONDS, id='vix_check', misfire_grace_time=30)
     scheduler.add_job(scheduled_qqq_rotation, 'interval', seconds=Config.QQQ_ROTATION_INTERVAL_SECONDS, id='qqq_rotation', max_instances=1, misfire_grace_time=60)
+
+    # 每5分钟备份数据库到 Azure Blob
+    async def scheduled_backup():
+        try:
+            await backup_db()
+        except Exception as e:
+            logger.error(f"DB备份失败: {e}")
+    scheduler.add_job(scheduled_backup, 'interval', seconds=300, id='db_backup', misfire_grace_time=60)
+
     scheduler.start()
 
     yield
 
+    # 关闭前最后备份一次
+    await backup_db()
     scheduler.shutdown()
     logger.info("系统关闭")
 
