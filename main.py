@@ -25,7 +25,6 @@ from trading.executor import execute_signal, check_stop_loss_take_profit, check_
 from trading.portfolio import get_portfolio_snapshot, save_snapshot, get_positions, get_cash
 from trading.qqq_rotation import check_rotation, get_qqq_portfolio, save_qqq_snapshot, init_qqq_account, get_qqq_sma200
 from notify import notify_trade, notify_alert, notify_rotation
-from chat.assistant import chat as ai_chat
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -553,13 +552,7 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             msg = json.loads(data)
 
-            if msg.get("type") == "chat":
-                response = await ai_chat(msg["content"])
-                await websocket.send_text(json.dumps(
-                    {"type": "chat", "data": {"role": "assistant", "content": response}},
-                    default=str, ensure_ascii=False
-                ))
-            elif msg.get("type") == "run_strategy":
+            if msg.get("type") == "run_strategy":
                 await scheduled_strategy()
 
     except WebSocketDisconnect:
