@@ -18,7 +18,7 @@ class Config:
     USE_AZURE = os.getenv("USE_AZURE", "true").lower() == "true"
 
     # 数据库
-    DB_PATH = os.path.join(os.path.dirname(__file__), "data", "simulator.db")
+    DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "data", "simulator.db"))
 
     # 交易规则
     MAX_POSITION_PCT = 0.25          # 单股最大仓位 25%
