@@ -7,7 +7,11 @@ async def get_db() -> aiosqlite.Connection:
     os.makedirs(os.path.dirname(Config.DB_PATH), exist_ok=True)
     db = await aiosqlite.connect(Config.DB_PATH)
     db.row_factory = aiosqlite.Row
-    await db.execute("PRAGMA journal_mode=WAL")
+    # WAL mode doesn't work on Azure Files (SMB), use DELETE journal mode instead
+    if os.getenv("DB_PATH"):
+        await db.execute("PRAGMA journal_mode=DELETE")
+    else:
+        await db.execute("PRAGMA journal_mode=WAL")
     await db.execute("PRAGMA foreign_keys=ON")
     return db
 
