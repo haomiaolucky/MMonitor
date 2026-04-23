@@ -1,0 +1,21 @@
+properties:
+  template:
+    containers:
+      - name: mmonitor
+        image: cab10936d165acr.azurecr.io/mmonitor:latest
+        resources:
+          cpu: 0.5
+          memory: 1Gi
+        env:
+          - name: DB_PATH
+            value: /data/simulator.db
+        volumeMounts:
+          - volumeName: datavolume
+            mountPath: /data
+    scale:
+      minReplicas: 1
+      maxReplicas: 1
+    volumes:
+      - name: datavolume
+        storageType: AzureFile
+        storageName: mmonitordata

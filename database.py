@@ -5,11 +5,13 @@ from config import Config
 
 async def get_db() -> aiosqlite.Connection:
     os.makedirs(os.path.dirname(Config.DB_PATH), exist_ok=True)
-    db = await aiosqlite.connect(Config.DB_PATH)
+    db = await aiosqlite.connect(Config.DB_PATH, timeout=30)
     db.row_factory = aiosqlite.Row
-    # WAL mode doesn't work on Azure Files (SMB), use DELETE journal mode instead
+    await db.execute("PRAGMA busy_timeout=30000")
+    # WAL mode and shared locking don't work on Azure Files (SMB)
     if os.getenv("DB_PATH"):
         await db.execute("PRAGMA journal_mode=DELETE")
+        await db.execute("PRAGMA locking_mode=EXCLUSIVE")
     else:
         await db.execute("PRAGMA journal_mode=WAL")
     await db.execute("PRAGMA foreign_keys=ON")
