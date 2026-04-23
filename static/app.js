@@ -23,7 +23,6 @@ function connectWS() {
             case 'portfolio': updatePortfolio(msg.data); break;
             case 'quotes': updateQuotes(msg.data); break;
             case 'trade': addTrade(msg.data); break;
-            case 'chat': addChatMessage('assistant', msg.data.content); break;
             case 'vix': updateVix(msg.data); break;
             case 'alert': showAlert(msg.data); break;
             case 'qqq_portfolio': updateQqqPortfolio(msg.data); break;
@@ -247,8 +246,6 @@ function showAlert(data) {
     // 自动消失 60 秒
     setTimeout(() => banner.classList.add('hidden'), 60000);
 
-    // 同时在聊天显示
-    addChatMessage('assistant', `⚠️ 监控警报: ${data.message}`);
 }
 
 function dismissAlert() {
@@ -338,41 +335,6 @@ async function loadQqqSma() {
     } catch (e) {}
 }
 
-// ========== Chat ==========
-function sendChat() {
-    const input = document.getElementById('chat-input');
-    const msg = input.value.trim();
-    if (!msg || !ws || ws.readyState !== WebSocket.OPEN) return;
-
-    addChatMessage('user', msg);
-    ws.send(JSON.stringify({ type: 'chat', content: msg }));
-    input.value = '';
-
-    // 显示加载动画
-    const container = document.getElementById('chat-messages');
-    const loadingDiv = document.createElement('div');
-    loadingDiv.id = 'chat-loading';
-    loadingDiv.className = 'chat-assistant text-sm';
-    loadingDiv.innerHTML = '<span class="loading-dot">●</span> <span class="loading-dot" style="animation-delay:0.3s">●</span> <span class="loading-dot" style="animation-delay:0.6s">●</span>';
-    container.appendChild(loadingDiv);
-    container.scrollTop = container.scrollHeight;
-}
-
-function addChatMessage(role, content) {
-    const container = document.getElementById('chat-messages');
-    const loading = document.getElementById('chat-loading');
-    if (loading) loading.remove();
-
-    const div = document.createElement('div');
-    div.className = role === 'user' ? 'chat-user text-sm' : 'chat-assistant text-sm';
-
-    const label = role === 'user' ? '👤 你' : '🤖 AI 助手';
-    div.innerHTML = `<div class="text-xs ${role === 'user' ? 'text-blue-300' : 'text-blue-400'} mb-1">${label}</div>${escapeHtml(content).replace(/\n/g, '<br>')}`;
-
-    container.appendChild(div);
-    container.scrollTop = container.scrollHeight;
-}
-
 // ========== Actions ==========
 async function runStrategy() {
     try {
@@ -386,8 +348,6 @@ async function runStrategy() {
         if (result.error) {
             alert('策略运行失败: ' + result.error);
         } else {
-            const msg = `策略运行完成: ${result.signals.length} 个信号, ${result.trades.length} 笔交易`;
-            addChatMessage('assistant', msg);
             loadTrades();
             loadEquityChart();
         }
@@ -399,11 +359,6 @@ async function runStrategy() {
     }
 }
 
-function viewStock(symbol) {
-    const msg = `帮我分析一下 ${symbol} 的当前情况`;
-    document.getElementById('chat-input').value = msg;
-    sendChat();
-}
 
 // ========== Helpers ==========
 function formatMoney(val) {

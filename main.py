@@ -265,7 +265,7 @@ async def lifespan(app: FastAPI):
         logger.info(f"🔁 AI轮动: 候选评分≥{Config.ROTATION_MIN_CANDIDATE_SCORE} 置信≥{Config.ROTATION_MIN_CANDIDATE_CONFIDENCE} 差距≥{Config.ROTATION_SCORE_GAP} | 浮盈≥{Config.ROTATION_PROTECT_WINNERS_PCT*100:.0f}%保护 | 新仓{Config.ROTATION_HOLD_COOLDOWN_DAYS}天冷却 | 每日≤{Config.ROTATION_MAX_PER_DAY}次")
     logger.info(f"💰 止盈: +{Config.TAKE_PROFIT_PCT*100:.0f}%卖半 → +{Config.TAKE_PROFIT_ALL_PCT*100:.0f}%清仓")
     logger.info(f"🛑 止损: 入场价跌{Config.STOP_LOSS_PCT*100:.0f}% → 清仓+冷却{Config.STOP_LOSS_COOLDOWN_DAYS}天")
-    logger.info(f"🤖 策略模型: {Config.LLM_MODEL} (盘中) | 聊天模型: {Config.LLM_CHAT_MODEL}")
+    logger.info(f"🤖 策略模型: {Config.LLM_MODEL} (盘中)")
     logger.info(f"🕐 市场状态: {get_market_status()} | 盘后仅跑技术指标 (省API)")
     logger.info(f"🔑 OpenAI API: {'已配置' if Config.OPENAI_API_KEY else '❌ 未配置'}")
     logger.info(f"📈 QQQ/TQQQ 轮动账户: ${Config.QQQ_INITIAL_CAPITAL:,.0f} | TQQQ条件: VIX<{Config.QQQ_TQQQ_ENTER_VIX}+QQQ>SMA200")
